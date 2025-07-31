@@ -19,7 +19,7 @@
 
 #define SL_MAIN_ARENA_PREALLOCATE 1024*1024
 
-static int sl_main_running = 1;
+static volatile sig_atomic_t sl_main_running = 1;
 
 void sl_main_dump_buffer(uint8_t *buffer, size_t length)
 {
@@ -69,7 +69,22 @@ void sl_main_dump_parser(sl_fcgi_parser *parser)
     }
 }
 
-void sl_main_parse_buffer(sl_fcgi_parser *parser, uint8_t *buffer, size_t length, uint8_t *address, uint16_t port)
+void sl_main_dump_request(sl_fcgi_request *request)
+{
+    printf("------------\nFCGI Request:\n");
+    printf("- State: %d\n", request->state);
+    if (request->first_param == NULL) {
+        printf("FCGI Param:\n(null)\n");
+    } else {
+        for (sl_fcgi_msg_param *param = request->first_param; param != NULL; param = param->next) {
+            printf("FCGI Param: %s=%s\n", param->name, param->value);
+        }
+    }
+
+    printf("FCGI Stdin:\n%s\n", request->stdin_stream.data);
+}
+
+void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, uint8_t *buffer, size_t length, uint8_t *address, uint16_t port)
 {
     ssize_t bytes_parsed = 0, previous = 0;
 
@@ -82,7 +97,7 @@ void sl_main_parse_buffer(sl_fcgi_parser *parser, uint8_t *buffer, size_t length
             warnx("sl_fcgi_parser_parse(): FCGI parse error for %s:%u - request id: %u, type: %u, size: 8/%u/%u",
                   address, port, parser->message_header.request_id, parser->message_header.type,
                   parser->message_header.content_length, parser->message_header.padding_length);
-            sl_main_dump_parser(parser);
+            //sl_main_dump_parser(parser);
             break;
         }
 
@@ -90,8 +105,20 @@ void sl_main_parse_buffer(sl_fcgi_parser *parser, uint8_t *buffer, size_t length
             warnx("sl_fcgi_parser_parse(): FCGI message for %s:%u - request id: %u, type: %u, size: 8/%u/%u",
                   address, port, parser->message_header.request_id, parser->message_header.type,
                   parser->message_header.content_length, parser->message_header.padding_length);
-            sl_main_dump_parser(parser);
-            sl_arena_rewind(parser->arena);
+            //sl_main_dump_parser(parser);
+            sl_fcgi_request_process(request, parser);
+            if (request->state == SL_FCGI_REQUEST_STATE_ERROR) {
+                warnx("sl_fcgi_request_process(): FCGI request error for %s:%u", address, port);
+                sl_main_dump_request(request);
+                break;
+            }
+
+            if (request->state == SL_FCGI_REQUEST_STATE_FINISHED) {
+                warnx("sl_fcgi_request_process(): FCGI request complete for %s:%u", address, port);
+                sl_main_dump_request(request);
+                break;
+            }
+
             sl_fcgi_parser_init(parser, parser->arena);
         }
 
@@ -102,16 +129,19 @@ void sl_main_parse_buffer(sl_fcgi_parser *parser, uint8_t *buffer, size_t length
 void sl_main_process_connection(sl_arena *arena, int connection_socket, uint8_t *address, uint16_t port)
 {
     sl_fcgi_parser parser;
+    sl_fcgi_request request;
+
     uint8_t recv_buffer[SL_NET_RECV_BUFFER_SIZE];
     ssize_t bytes_read;
 
+    sl_fcgi_request_init(&request, arena);
     sl_fcgi_parser_init(&parser, arena);
 
     while ((bytes_read = recv(connection_socket, recv_buffer, SL_NET_RECV_BUFFER_SIZE, 0)) > 0) {
         warnx("recv(): Received %ld bytes from %s:%u", bytes_read, address, port);
 
-        sl_main_parse_buffer(&parser, recv_buffer, bytes_read, address, port);
-        if (parser.state == SL_FCGI_PARSER_STATE_ERROR) {
+        sl_main_parse_buffer(&request, &parser, recv_buffer, bytes_read, address, port);
+        if (request.state == SL_FCGI_REQUEST_STATE_ERROR || parser.state == SL_FCGI_PARSER_STATE_ERROR) {
             break;
         }
 
@@ -147,7 +177,9 @@ int main(int argc, char *argv[])
     uint8_t client_ip_address[SL_NET_IP_ADDRESS_SIZE];
     uint16_t client_port;
 
-    signal(SIGINT, &sl_main_signal_handler);
+    if (signal(SIGINT, &sl_main_signal_handler) == SIG_ERR) {
+        err(EXIT_FAILURE, "signal()");
+    }
 
     server_socket = sl_net_create_listen_socket(INADDR_ANY, 9000, SL_NET_LISTEN_BACKLOG);
     if (server_socket == -1) {

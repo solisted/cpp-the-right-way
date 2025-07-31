@@ -4,7 +4,7 @@
 
 void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena)
 {
-    memset(parser, 0, sizeof(sl_fcgi_parser));
+    *parser = (sl_fcgi_parser) {0};
 
     parser->state = SL_FGI_PARSER_STATE_VERSION;
     parser->arena = arena;
@@ -336,4 +336,117 @@ ssize_t sl_fcgi_parser_parse(sl_fcgi_parser *parser, uint8_t *buffer, size_t len
     }
 
     return total_parsed;
+}
+
+void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena)
+{
+    *request = (sl_fcgi_request) {0};
+
+    request->state = SL_FCGI_REQUEST_STATE_BEGIN;
+    request->arena = arena;
+}
+
+static void sl_fcgi_request_append_param(sl_fcgi_request *request, sl_fcgi_parser *parser)
+{
+    // TODO: If arenas are not the same for request and parser, copy list instead of just relinking
+    if (request->first_param == NULL) {
+        request->first_param = parser->first_param;
+        request->last_param = parser->last_param;
+        return;
+    }
+
+    request->last_param->next = parser->first_param;
+    request->last_param = parser->last_param;
+}
+
+static void sl_fcgi_request_append_stdin(sl_fcgi_request *request, sl_fcgi_parser *parser)
+{
+    if (parser->stdin_stream.length == 0) {
+        return;
+    }
+
+    size_t new_length = request->stdin_stream.length + parser->stdin_stream.length;
+    uint8_t *buffer = sl_arena_allocate(request->arena, new_length + 1);
+    if (buffer == NULL) {
+        request->state = SL_FCGI_REQUEST_STATE_ERROR;
+        return;
+    }
+
+    if (request->stdin_stream.length != 0) {
+        memcpy(buffer, request->stdin_stream.data, request->stdin_stream.length);
+    }
+
+    memcpy(buffer + request->stdin_stream.length, parser->stdin_stream.data, parser->stdin_stream.length);
+
+    request->stdin_stream.length = new_length;
+    request->stdin_stream.data = buffer;
+    request->stdin_stream.data[request->stdin_stream.length] = 0;
+}
+
+void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser)
+{
+    if (parser->state != SL_FCGI_PARSER_STATE_FINISHED) {
+        request->state = SL_FCGI_REQUEST_STATE_ERROR;
+        return;
+    }
+
+    switch (request->state) {
+        case SL_FCGI_REQUEST_STATE_BEGIN:
+            if (parser->message_header.type != SL_FCGI_TYPE_BEGIN_REQUEST) {
+                request->state = SL_FCGI_REQUEST_STATE_ERROR;
+                break;
+            }
+
+            request->state = SL_FCGI_REQUEST_STATE_PARAM_OR_STDIN;
+            break;
+        case SL_FCGI_REQUEST_STATE_PARAM_OR_STDIN:
+            if (parser->message_header.type == SL_FCGI_TYPE_PARAMS) {
+                if (parser->message_header.content_length == 0) {
+                    request->state = SL_FCGI_REQUEST_STATE_STDIN;
+                    break;
+                }
+                sl_fcgi_request_append_param(request, parser);
+                break;
+            } else if (parser->message_header.type == SL_FCGI_TYPE_STDIN) {
+                if (parser->message_header.content_length == 0) {
+                    request->state = SL_FCGI_REQUEST_STATE_PARAM;
+                    break;
+                }
+                sl_fcgi_request_append_stdin(request, parser);
+                break;
+            }
+            request->state = SL_FCGI_REQUEST_STATE_ERROR;
+            break;
+        case SL_FCGI_REQUEST_STATE_PARAM:
+            if (parser->message_header.type != SL_FCGI_TYPE_PARAMS) {
+                request->state = SL_FCGI_REQUEST_STATE_ERROR;
+                break;
+            }
+
+            if (parser->message_header.content_length == 0) {
+                request->state = SL_FCGI_REQUEST_STATE_FINISHED;
+                break;
+            }
+            sl_fcgi_request_append_param(request, parser);
+            break;
+        case SL_FCGI_REQUEST_STATE_STDIN:
+            if (parser->message_header.type != SL_FCGI_TYPE_STDIN) {
+                request->state = SL_FCGI_REQUEST_STATE_ERROR;
+                break;
+            }
+
+            if (parser->message_header.content_length == 0) {
+                request->state = SL_FCGI_REQUEST_STATE_FINISHED;
+                break;
+            }
+            sl_fcgi_request_append_stdin(request, parser);
+            break;
+        case SL_FCGI_REQUEST_STATE_PROCESS:
+        case SL_FCGI_REQUEST_STATE_RESPOND:
+        case SL_FCGI_REQUEST_STATE_FINISHED:
+            request->state = SL_FCGI_REQUEST_STATE_ERROR;
+            break;
+        case SL_FCGI_REQUEST_STATE_ERROR:
+            break;
+    }
 }
