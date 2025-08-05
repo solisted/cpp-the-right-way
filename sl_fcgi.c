@@ -397,6 +397,8 @@ void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser)
                 break;
             }
 
+            request->flags = parser->begin_message.flags;
+            request->request_id = parser->message_header.request_id;
             request->state = SL_FCGI_REQUEST_STATE_PARAM_OR_STDIN;
             break;
         case SL_FCGI_REQUEST_STATE_PARAM_OR_STDIN:
@@ -441,8 +443,6 @@ void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser)
             }
             sl_fcgi_request_append_stdin(request, parser);
             break;
-        case SL_FCGI_REQUEST_STATE_PROCESS:
-        case SL_FCGI_REQUEST_STATE_RESPOND:
         case SL_FCGI_REQUEST_STATE_FINISHED:
             request->state = SL_FCGI_REQUEST_STATE_ERROR;
             break;

@@ -5,9 +5,15 @@
 
 #include "sl_arena.h"
 
+#define SL_FCGI_VERSION 1
+
+#define SL_FCGI_FLAG_KEEP_CONN 1
+
 #define SL_FCGI_TYPE_BEGIN_REQUEST 1
+#define SL_FCGI_TYPE_END_REQUEST   3
 #define SL_FCGI_TYPE_PARAMS        4
 #define SL_FCGI_TYPE_STDIN         5
+#define SL_FCGI_TYPE_STDOUT        6
 
 typedef enum sl_fcgi_parser_state sl_fcgi_parser_state;
 typedef enum sl_fcgi_request_state sl_fcgi_request_state;
@@ -17,6 +23,7 @@ typedef struct sl_fcgi_parser sl_fcgi_parser;
 typedef struct sl_fcgi_msg_begin sl_fcgi_msg_begin;
 typedef struct sl_fcgi_msg_param sl_fcgi_msg_param;
 typedef struct sl_fcgi_msg_stdin sl_fcgi_msg_stdin;
+typedef struct sl_fcgi_msg_end sl_fcgi_msg_end;
 typedef struct sl_fcgi_request sl_fcgi_request;
 
 enum sl_fcgi_parser_state {
@@ -62,8 +69,6 @@ enum sl_fcgi_request_state {
     SL_FCGI_REQUEST_STATE_PARAM_OR_STDIN,
     SL_FCGI_REQUEST_STATE_PARAM,
     SL_FCGI_REQUEST_STATE_STDIN,
-    SL_FCGI_REQUEST_STATE_PROCESS,
-    SL_FCGI_REQUEST_STATE_RESPOND,
 
     SL_FCGI_REQUEST_STATE_FINISHED,
     SL_FCGI_REQUEST_STATE_ERROR
@@ -97,6 +102,12 @@ struct sl_fcgi_msg_stdin {
     uint8_t *data;
 };
 
+struct sl_fcgi_msg_end {
+    uint32_t app_status;
+    uint8_t protocol_status;
+    uint8_t reserved[3];
+};
+
 struct sl_fcgi_parser {
     sl_fcgi_parser_state state;
     size_t read_counter;
@@ -112,6 +123,8 @@ struct sl_fcgi_parser {
 struct sl_fcgi_request {
     sl_fcgi_request_state state;
     sl_arena *arena;
+    uint16_t request_id;
+    uint8_t flags;
     sl_fcgi_msg_param *first_param;
     sl_fcgi_msg_param *last_param;
     sl_fcgi_msg_stdin stdin_stream;

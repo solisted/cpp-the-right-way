@@ -4,6 +4,7 @@
 #include <string.h>
 #include <err.h>
 #include <signal.h>
+#include <sys/wait.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -13,78 +14,89 @@
 #include "sl_net.h"
 #include "sl_fcgi.h"
 
-#define SL_NET_LISTEN_BACKLOG   128
-#define SL_NET_RECV_BUFFER_SIZE 1024
+#define SL_NET_LISTEN_BACKLOG   1024
+#define SL_NET_RECV_BUFFER_SIZE 10240
 #define SL_NET_IP_ADDRESS_SIZE  16
 
 #define SL_MAIN_ARENA_PREALLOCATE 1024*1024
 
-static volatile sig_atomic_t sl_main_running = 1;
+#define SL_MAIN_FCGI_RESPONSE "Content-Type: text/plain\r\n\r\nOK\r\n"
 
-void sl_main_dump_buffer(uint8_t *buffer, size_t length)
+int sl_main_request_send_stdout(sl_fcgi_request *request, int connection_socket, void *buffer, uint16_t length)
 {
-    for (size_t n = 0; n < length; n += 16) {
-        printf("%08zX ", n);
+    ssize_t bytes_sent;
 
-        for (size_t c = n; c < n + 16 && c < length; c ++) {
-            printf("%02X ", buffer[c]);
-        }
+    sl_fcgi_msg_header header = {
+        .version = SL_FCGI_VERSION,
+        .type = SL_FCGI_TYPE_STDOUT,
+        .request_id = htons(request->request_id),
+        .content_length = htons(length),
+        .padding_length = 0,
+        .reserved = 0
+    };
 
-        for (size_t c = n; c < n + 16 && c < length; c ++) {
-            printf("%c", (buffer[c] >= 0x20 && buffer[c] < 0x7f) ? buffer[c] : '.');
-        }
-
-        printf("\n");
-    }
-}
-
-void sl_main_dump_parser(sl_fcgi_parser *parser)
-{
-    printf("------------\nFCGI Header:\n");
-    printf("- Version: %u\n", parser->message_header.version);
-    printf("- Type: %u\n", parser->message_header.type);
-    printf("- Request ID: %u\n", parser->message_header.request_id);
-    printf("- Content Length: %u\n", parser->message_header.content_length);
-    printf("- Padding Length: %u\n", parser->message_header.padding_length);
-
-    switch (parser->message_header.type) {
-        case SL_FCGI_TYPE_BEGIN_REQUEST:
-            printf("FCGI Begin Request:\n");
-            printf("- Role: %u\n", parser->begin_message.role);
-            printf("- Flags: %u\n", parser->begin_message.flags);
-            break;
-        case SL_FCGI_TYPE_PARAMS:
-            if (parser->first_param == NULL) {
-                printf("FCGI Param:\n(null)\n");
-                break;
-            }
-
-            for (sl_fcgi_msg_param *param = parser->first_param; param != NULL; param = param->next) {
-                printf("FCGI Param: %s=%s\n", param->name, param->value);
-            }
-            break;
-        case SL_FCGI_TYPE_STDIN:
-            printf("FCGI Stdin:\n%s\n", parser->stdin_stream.data);
-            break;
-    }
-}
-
-void sl_main_dump_request(sl_fcgi_request *request)
-{
-    printf("------------\nFCGI Request:\n");
-    printf("- State: %d\n", request->state);
-    if (request->first_param == NULL) {
-        printf("FCGI Param:\n(null)\n");
-    } else {
-        for (sl_fcgi_msg_param *param = request->first_param; param != NULL; param = param->next) {
-            printf("FCGI Param: %s=%s\n", param->name, param->value);
-        }
+    bytes_sent = send(connection_socket, &header, sizeof(sl_fcgi_msg_header), 0);
+    if (bytes_sent == -1) {
+        return -1;
     }
 
-    printf("FCGI Stdin:\n%s\n", request->stdin_stream.data);
+    if (buffer == NULL || length == 0) {
+        return 0;
+    }
+
+    bytes_sent = send(connection_socket, buffer, length, 0);
+    if (bytes_sent == -1) {
+        return -1;
+    }
+
+    return 0;
 }
 
-void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, uint8_t *buffer, size_t length, uint8_t *address, uint16_t port)
+int sl_main_request_send_end_request(sl_fcgi_request *request, int connection_socket)
+{
+    ssize_t bytes_sent;
+
+    sl_fcgi_msg_header header = {
+        .version = SL_FCGI_VERSION,
+        .type = SL_FCGI_TYPE_END_REQUEST,
+        .request_id = htons(request->request_id),
+        .content_length = htons(sizeof(sl_fcgi_msg_end)),
+        .padding_length = 0,
+        .reserved = 0
+    };
+
+    sl_fcgi_msg_end message = {0};
+
+    bytes_sent = send(connection_socket, &header, sizeof(sl_fcgi_msg_header), 0);
+    if (bytes_sent == -1) {
+        return -1;
+    }
+
+    bytes_sent = send(connection_socket, &message, sizeof(sl_fcgi_msg_end), 0);
+    if (bytes_sent == -1) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int sl_main_request_execute(sl_fcgi_request *request, int connection_socket)
+{
+    if (sl_main_request_send_stdout(request, connection_socket, SL_MAIN_FCGI_RESPONSE, strlen(SL_MAIN_FCGI_RESPONSE)) == -1) {
+        warn("sl_main_request_send_stdout()");
+        return -1;
+    } else if (sl_main_request_send_stdout(request, connection_socket, NULL, 0) == -1) {
+        warn("sl_main_request_send_stdout()");
+        return -1;
+    } else if (sl_main_request_send_end_request(request, connection_socket) == -1) {
+        warn("sl_main_request_send_end_request()");
+        return -1;
+    }
+
+    return 0;
+}
+
+void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, int connection_socket, uint8_t *buffer, size_t length, uint8_t *address, uint16_t port)
 {
     ssize_t bytes_parsed = 0, previous = 0;
 
@@ -97,7 +109,6 @@ void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, uint
             warnx("sl_fcgi_parser_parse(): FCGI parse error for %s:%u - request id: %u, type: %u, size: 8/%u/%u",
                   address, port, parser->message_header.request_id, parser->message_header.type,
                   parser->message_header.content_length, parser->message_header.padding_length);
-            //sl_main_dump_parser(parser);
             break;
         }
 
@@ -105,17 +116,15 @@ void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, uint
             warnx("sl_fcgi_parser_parse(): FCGI message for %s:%u - request id: %u, type: %u, size: 8/%u/%u",
                   address, port, parser->message_header.request_id, parser->message_header.type,
                   parser->message_header.content_length, parser->message_header.padding_length);
-            //sl_main_dump_parser(parser);
             sl_fcgi_request_process(request, parser);
             if (request->state == SL_FCGI_REQUEST_STATE_ERROR) {
                 warnx("sl_fcgi_request_process(): FCGI request error for %s:%u", address, port);
-                sl_main_dump_request(request);
                 break;
             }
 
             if (request->state == SL_FCGI_REQUEST_STATE_FINISHED) {
                 warnx("sl_fcgi_request_process(): FCGI request complete for %s:%u", address, port);
-                sl_main_dump_request(request);
+                sl_main_request_execute(request, connection_socket);
                 break;
             }
 
@@ -126,7 +135,7 @@ void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, uint
     }
 }
 
-void sl_main_process_connection(sl_arena *arena, int connection_socket, uint8_t *address, uint16_t port)
+int sl_main_process_connection(sl_arena *arena, int connection_socket, uint8_t *address, uint16_t port)
 {
     sl_fcgi_parser parser;
     sl_fcgi_request request;
@@ -140,7 +149,7 @@ void sl_main_process_connection(sl_arena *arena, int connection_socket, uint8_t 
     while ((bytes_read = recv(connection_socket, recv_buffer, SL_NET_RECV_BUFFER_SIZE, 0)) > 0) {
         warnx("recv(): Received %ld bytes from %s:%u", bytes_read, address, port);
 
-        sl_main_parse_buffer(&request, &parser, recv_buffer, bytes_read, address, port);
+        sl_main_parse_buffer(&request, &parser, connection_socket, recv_buffer, bytes_read, address, port);
         if (request.state == SL_FCGI_REQUEST_STATE_ERROR || parser.state == SL_FCGI_PARSER_STATE_ERROR) {
             break;
         }
@@ -150,16 +159,25 @@ void sl_main_process_connection(sl_arena *arena, int connection_socket, uint8_t 
         }
     }
 
-    if (bytes_read == -1) {
-        warn("recv(): Error while reading from  %s:%u", address, port);
+    if ((request.flags & SL_FCGI_FLAG_KEEP_CONN) == SL_FCGI_FLAG_KEEP_CONN) {
+        return 1;
     }
+
+    if (bytes_read == -1) {
+        warn("recv(): Error while reading from %s:%u", address, port);
+    } else if (bytes_read == 0) {
+        warnx("recv(): Connection closed while reading from %s:%u", address, port);
+    }
+
+    return 0;
 }
 
 void sl_main_signal_handler(int signal_number)
 {
     switch (signal_number) {
         case SIGINT:
-            sl_main_running = 0;
+            warnx("sl_main_signal_handler(): Received SIGINT, terminating program");
+            exit(EXIT_FAILURE);
             break;
         default:
             break;
@@ -188,18 +206,23 @@ int main(int argc, char *argv[])
 
     sl_arena_init(&arena, SL_MAIN_ARENA_PREALLOCATE);
 
-    while (sl_main_running) {
+    while (1) {
         client_socket = accept(server_socket, (struct sockaddr*) &client_address, &client_address_size);
         if (client_socket == -1) {
             warn("accept()");
             continue;
         }
+
         memcpy(client_ip_address, inet_ntoa(client_address.sin_addr), SL_NET_IP_ADDRESS_SIZE);
         client_port = ntohs(client_address.sin_port);
 
         warnx("accept(): Got connection from %s:%u", client_ip_address, client_port);
 
-        sl_main_process_connection(&arena, client_socket, client_ip_address, client_port);
+        while (sl_main_process_connection(&arena, client_socket, client_ip_address, client_port) == 1) {
+            warnx("accept(): Reusing connection for %s:%u", client_ip_address, client_port);
+            sl_arena_rewind(&arena);
+        }
+
         sl_arena_rewind(&arena);
 
         warnx("close(): Closing connection to %s:%u", client_ip_address, client_port);
@@ -208,8 +231,6 @@ int main(int argc, char *argv[])
 
     sl_arena_destroy(&arena);
     close(server_socket);
-
-    warnx("main(): Program interrupted by SIGINT");
 
     return EXIT_SUCCESS;
 }
