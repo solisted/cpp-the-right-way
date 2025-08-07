@@ -19,14 +19,22 @@
 #define SL_NET_IP_ADDRESS_SIZE  16
 
 #define SL_MAIN_ARENA_PREALLOCATE 1024*1024
+#define SL_MAIN_PROCESS_COUNT 8
 
 #define SL_MAIN_FCGI_RESPONSE "Content-Type: text/plain\r\n\r\nOK\r\n"
 
-int sl_main_request_send_stdout(sl_fcgi_request *request, int connection_socket, void *buffer, uint16_t length)
+int sl_main_request_send_response(sl_fcgi_request *request, int connection_socket, void *buffer, uint16_t length)
 {
     ssize_t bytes_sent;
+    size_t output_length = sizeof(sl_fcgi_msg_header) * 3 + sizeof(sl_fcgi_msg_end) + length;
 
-    sl_fcgi_msg_header header = {
+    uint8_t *output_buffer = sl_arena_allocate(request->arena, output_length);
+    if (output_buffer == NULL) {
+        warn("sl_arena_allocate()");
+        return -1;
+    }
+
+    sl_fcgi_msg_header stdout_header = {
         .version = SL_FCGI_VERSION,
         .type = SL_FCGI_TYPE_STDOUT,
         .request_id = htons(request->request_id),
@@ -35,28 +43,7 @@ int sl_main_request_send_stdout(sl_fcgi_request *request, int connection_socket,
         .reserved = 0
     };
 
-    bytes_sent = send(connection_socket, &header, sizeof(sl_fcgi_msg_header), 0);
-    if (bytes_sent == -1) {
-        return -1;
-    }
-
-    if (buffer == NULL || length == 0) {
-        return 0;
-    }
-
-    bytes_sent = send(connection_socket, buffer, length, 0);
-    if (bytes_sent == -1) {
-        return -1;
-    }
-
-    return 0;
-}
-
-int sl_main_request_send_end_request(sl_fcgi_request *request, int connection_socket)
-{
-    ssize_t bytes_sent;
-
-    sl_fcgi_msg_header header = {
+    sl_fcgi_msg_header end_header = {
         .version = SL_FCGI_VERSION,
         .type = SL_FCGI_TYPE_END_REQUEST,
         .request_id = htons(request->request_id),
@@ -65,31 +52,32 @@ int sl_main_request_send_end_request(sl_fcgi_request *request, int connection_so
         .reserved = 0
     };
 
-    sl_fcgi_msg_end message = {0};
+    sl_fcgi_msg_end end_message = {0};
 
-    bytes_sent = send(connection_socket, &header, sizeof(sl_fcgi_msg_header), 0);
+    memcpy(output_buffer, &stdout_header, sizeof(sl_fcgi_msg_header));
+    memcpy(output_buffer + sizeof(sl_fcgi_msg_header), buffer, length);
+
+    stdout_header.content_length = 0;
+    memcpy(output_buffer + sizeof(sl_fcgi_msg_header) + length, &stdout_header, sizeof(sl_fcgi_msg_header));
+
+    memcpy(output_buffer + sizeof(sl_fcgi_msg_header) * 2 + length, &end_header, sizeof(sl_fcgi_msg_header));
+    memcpy(output_buffer + sizeof(sl_fcgi_msg_header) * 3 + length, &end_message, sizeof(sl_fcgi_msg_end));
+
+    bytes_sent = send(connection_socket, output_buffer, output_length, 0);
     if (bytes_sent == -1) {
+        warn("send()");
         return -1;
     }
 
-    bytes_sent = send(connection_socket, &message, sizeof(sl_fcgi_msg_end), 0);
-    if (bytes_sent == -1) {
-        return -1;
-    }
+    warnx("sl_main_request_send_response(): Send %lu bytes response", bytes_sent);
 
     return 0;
 }
 
 int sl_main_request_execute(sl_fcgi_request *request, int connection_socket)
 {
-    if (sl_main_request_send_stdout(request, connection_socket, SL_MAIN_FCGI_RESPONSE, strlen(SL_MAIN_FCGI_RESPONSE)) == -1) {
-        warn("sl_main_request_send_stdout()");
-        return -1;
-    } else if (sl_main_request_send_stdout(request, connection_socket, NULL, 0) == -1) {
-        warn("sl_main_request_send_stdout()");
-        return -1;
-    } else if (sl_main_request_send_end_request(request, connection_socket) == -1) {
-        warn("sl_main_request_send_end_request()");
+    if (sl_main_request_send_response(request, connection_socket, SL_MAIN_FCGI_RESPONSE, strlen(SL_MAIN_FCGI_RESPONSE)) == -1) {
+        warn("sl_main_request_send_response()");
         return -1;
     }
 
@@ -199,38 +187,57 @@ int main(int argc, char *argv[])
         err(EXIT_FAILURE, "signal()");
     }
 
+    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
+        err(EXIT_FAILURE, "signal()");
+    }
+
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        err(EXIT_FAILURE, "signal()");
+    }
+
     server_socket = sl_net_create_listen_socket(INADDR_ANY, 9000, SL_NET_LISTEN_BACKLOG);
     if (server_socket == -1) {
         err(EXIT_FAILURE, "sl_main_create_socket()");
     }
 
-    sl_arena_init(&arena, SL_MAIN_ARENA_PREALLOCATE);
+    for (int n = 0; n < SL_MAIN_PROCESS_COUNT; n ++) {
+        pid_t pid = fork();
+        if (pid == -1) {
+            err(EXIT_FAILURE, "fork()");
+        }
 
-    while (1) {
-        client_socket = accept(server_socket, (struct sockaddr*) &client_address, &client_address_size);
-        if (client_socket == -1) {
-            warn("accept()");
+        if (pid > 0) {
+            warnx("main(): Spawned child process: %d", pid);
             continue;
         }
 
-        memcpy(client_ip_address, inet_ntoa(client_address.sin_addr), SL_NET_IP_ADDRESS_SIZE);
-        client_port = ntohs(client_address.sin_port);
+        sl_arena_init(&arena, SL_MAIN_ARENA_PREALLOCATE);
 
-        warnx("accept(): Got connection from %s:%u", client_ip_address, client_port);
+        while (1) {
+            client_socket = accept(server_socket, (struct sockaddr*) &client_address, &client_address_size);
 
-        while (sl_main_process_connection(&arena, client_socket, client_ip_address, client_port) == 1) {
-            warnx("accept(): Reusing connection for %s:%u", client_ip_address, client_port);
+            memcpy(client_ip_address, inet_ntoa(client_address.sin_addr), SL_NET_IP_ADDRESS_SIZE);
+            client_port = ntohs(client_address.sin_port);
+
+            warnx("accept(): Got connection from %s:%u", client_ip_address, client_port);
+
+            while (sl_main_process_connection(&arena, client_socket, client_ip_address, client_port) == 1) {
+                warnx("accept(): Reusing connection for %s:%u", client_ip_address, client_port);
+                sl_arena_rewind(&arena);
+            }
+
             sl_arena_rewind(&arena);
+
+            warnx("close(): Closing connection to %s:%u", client_ip_address, client_port);
+            close(client_socket);
         }
 
-        sl_arena_rewind(&arena);
-
-        warnx("close(): Closing connection to %s:%u", client_ip_address, client_port);
-        close(client_socket);
+        sl_arena_destroy(&arena);
+        exit(EXIT_SUCCESS);
     }
 
-    sl_arena_destroy(&arena);
     close(server_socket);
+    wait(NULL);
 
     return EXIT_SUCCESS;
 }
