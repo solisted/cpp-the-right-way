@@ -2,12 +2,13 @@
 
 #include <stdio.h>
 
-void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena)
+void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena, sl_log *log)
 {
     *parser = (sl_fcgi_parser) {0};
 
     parser->state = SL_FGI_PARSER_STATE_VERSION;
     parser->arena = arena;
+    parser->log = log;
 }
 
 sl_fcgi_parser_state sl_fcgi_parser_dispatch_type(uint8_t type)
@@ -338,12 +339,13 @@ ssize_t sl_fcgi_parser_parse(sl_fcgi_parser *parser, uint8_t *buffer, size_t len
     return total_parsed;
 }
 
-void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena)
+void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena, sl_log *log)
 {
     *request = (sl_fcgi_request) {0};
 
     request->state = SL_FCGI_REQUEST_STATE_BEGIN;
     request->arena = arena;
+    request->log = log;
 }
 
 static void sl_fcgi_request_append_param(sl_fcgi_request *request, sl_fcgi_parser *parser)

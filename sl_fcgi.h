@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "sl_arena.h"
+#include "sl_log.h"
 
 #define SL_FCGI_VERSION 1
 
@@ -113,6 +114,7 @@ struct sl_fcgi_parser {
     size_t read_counter;
     size_t message_size;
     sl_arena *arena;
+    sl_log *log;
     sl_fcgi_msg_header message_header;
     sl_fcgi_msg_begin begin_message;
     sl_fcgi_msg_param *first_param;
@@ -123,6 +125,7 @@ struct sl_fcgi_parser {
 struct sl_fcgi_request {
     sl_fcgi_request_state state;
     sl_arena *arena;
+    sl_log *log;
     uint16_t request_id;
     uint8_t flags;
     sl_fcgi_msg_param *first_param;
@@ -130,10 +133,10 @@ struct sl_fcgi_request {
     sl_fcgi_msg_stdin stdin_stream;
 };
 
-void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena);
+void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena, sl_log *log);
 ssize_t sl_fcgi_parser_parse(sl_fcgi_parser *parser, uint8_t *buffer, size_t length);
 
-void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena);
+void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena, sl_log *log);
 void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser);
 
 #endif
