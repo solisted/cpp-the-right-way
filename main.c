@@ -21,6 +21,9 @@
 #define SL_MAIN_ARENA_PREALLOCATE 1024*1024
 #define SL_MAIN_PROCESS_COUNT 8
 
+#define SL_MAIN_MASTER_PROCESS_NAME "cpptrw: master process"
+#define SL_MAIN_WORKER_PROCESS_NAME "cpptrw: worker process"
+
 #define SL_MAIN_FCGI_RESPONSE "Content-Type: text/plain\r\n\r\nOK\n"
 
 int sl_main_request_send_response(sl_fcgi_request *request, int connection_socket, void *buffer, uint16_t length)
@@ -165,7 +168,26 @@ void sl_main_signal_handler(int signal_number)
     }
 }
 
-int main(int argc, char *argv[])
+void sl_main_set_process_name(int argc, char *argv[], char *env[], char *name)
+{
+    size_t available = 0, length = strlen(name) + 1;
+
+    if (argc >= 1) {
+        available += strlen(argv[0]);
+    }
+
+    for (int n = 0; env[n] != NULL; n ++) {
+        available += strlen(env[0]);
+    }
+
+    if (length > available) {
+        return;
+    }
+
+    memcpy(argv[0], name, length);
+}
+
+int main(int argc, char *argv[], char *env[])
 {
     sl_arena arena;
     sl_log log;
@@ -174,7 +196,9 @@ int main(int argc, char *argv[])
     struct sockaddr_in client_address;
     socklen_t client_address_size = sizeof(client_address);
 
-    sl_log_init(&log, SL_LOG_INFO, STDOUT_FILENO);
+    sl_main_set_process_name(argc, argv, env, SL_MAIN_MASTER_PROCESS_NAME);
+
+    sl_log_init(&log, SL_LOG_ERROR, STDOUT_FILENO);
     sl_log_set_pid(&log, getpid());
 
     if (signal(SIGINT, &sl_main_signal_handler) == SIG_ERR) {
@@ -208,6 +232,8 @@ int main(int argc, char *argv[])
         if (pid > 0) {
             continue;
         }
+
+        sl_main_set_process_name(argc, argv, env, SL_MAIN_WORKER_PROCESS_NAME);
 
         sl_log_set_pid(&log, getpid());
         sl_arena_init(&arena, SL_MAIN_ARENA_PREALLOCATE);

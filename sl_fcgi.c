@@ -36,25 +36,25 @@ void sl_fcgi_parser_parse_begin_request(sl_fcgi_parser *parser, uint8_t octet)
             break;
         case SL_FGI_PARSER_STATE_BEGIN_ROLE_B0:
             parser->begin_message.role |= octet;
-            parser->state = SL_FGI_PARSER_STATE_BEGIN_ROLE_FLAGS;
+            parser->state = SL_FGI_PARSER_STATE_BEGIN_FLAGS;
             break;
-        case SL_FGI_PARSER_STATE_BEGIN_ROLE_FLAGS:
+        case SL_FGI_PARSER_STATE_BEGIN_FLAGS:
             parser->begin_message.flags = octet;
-            parser->state = SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP5;
+            parser->state = SL_FGI_PARSER_STATE_BEGIN_SKIP5;
             break;
-        case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP5:
-            parser->state = SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP4;
+        case SL_FGI_PARSER_STATE_BEGIN_SKIP5:
+            parser->state = SL_FGI_PARSER_STATE_BEGIN_SKIP4;
             break;
-        case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP4:
-            parser->state = SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP3;
+        case SL_FGI_PARSER_STATE_BEGIN_SKIP4:
+            parser->state = SL_FGI_PARSER_STATE_BEGIN_SKIP3;
             break;
-        case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP3:
-            parser->state = SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP2;
+        case SL_FGI_PARSER_STATE_BEGIN_SKIP3:
+            parser->state = SL_FGI_PARSER_STATE_BEGIN_SKIP2;
             break;
-        case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP2:
-            parser->state = SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP1;
+        case SL_FGI_PARSER_STATE_BEGIN_SKIP2:
+            parser->state = SL_FGI_PARSER_STATE_BEGIN_SKIP1;
             break;
-        case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP1:
+        case SL_FGI_PARSER_STATE_BEGIN_SKIP1:
             parser->message_size = 16;
             parser->state = SL_FCGI_PARSER_STATE_FINISHED;
             break;
@@ -294,12 +294,12 @@ ssize_t sl_fcgi_parser_parse(sl_fcgi_parser *parser, uint8_t *buffer, size_t len
                 break;
             case SL_FGI_PARSER_STATE_BEGIN_ROLE_B1:
             case SL_FGI_PARSER_STATE_BEGIN_ROLE_B0:
-            case SL_FGI_PARSER_STATE_BEGIN_ROLE_FLAGS:
-            case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP5:
-            case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP4:
-            case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP3:
-            case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP2:
-            case SL_FGI_PARSER_STATE_BEGIN_ROLE_SKIP1:
+            case SL_FGI_PARSER_STATE_BEGIN_FLAGS:
+            case SL_FGI_PARSER_STATE_BEGIN_SKIP5:
+            case SL_FGI_PARSER_STATE_BEGIN_SKIP4:
+            case SL_FGI_PARSER_STATE_BEGIN_SKIP3:
+            case SL_FGI_PARSER_STATE_BEGIN_SKIP2:
+            case SL_FGI_PARSER_STATE_BEGIN_SKIP1:
                 sl_fcgi_parser_parse_begin_request(parser, octet);
                 break;
             case SL_FCGI_PARSER_STATE_PARAM_NAME_LENGTH_B3:
