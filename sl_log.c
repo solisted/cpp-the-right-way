@@ -99,7 +99,7 @@ void sl_log_write(sl_log *log, sl_log_level level, char *message, ...)
         va_end(arguments);
     }
 
-    if (errno > 0) {
+    if (level == SL_LOG_ERROR && errno > 0) {
         sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, ": ", 2, &log_buffer_size);
         char *error_message = strerror(errno);
         sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, error_message, strlen(error_message), &log_buffer_size);
