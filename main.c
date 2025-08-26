@@ -261,6 +261,7 @@ int main(int argc, char *argv[], char *env[])
             continue;
         }
 
+        sl_main_set_process_name(argc, argv, env, SL_MAIN_WORKER_PROCESS_NAME);
         sl_log_set_pid(&log, getpid());
 
         int epoll_instance = epoll_create1(0);

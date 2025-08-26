@@ -18,6 +18,10 @@ struct sl_arena {
     sl_arena_block *first;
     sl_arena_block *last;
     size_t preallocate;
+    size_t allocations;
+    size_t allocated;
+    size_t blocks;
+    size_t used;
 };
 
 void sl_arena_init(sl_arena *arena, size_t preallocate);

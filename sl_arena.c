@@ -30,8 +30,8 @@ static void *sl_arena_allocate_from_block(sl_arena_block *block, size_t size)
 
 void sl_arena_init(sl_arena *arena, size_t preallocate)
 {
-    arena->first = NULL;
-    arena->last = NULL;
+    *arena = (sl_arena) {0};
+
     arena->preallocate = preallocate;
 }
 
@@ -66,6 +66,8 @@ void *sl_arena_allocate(sl_arena *arena, size_t size)
 
     for (block = arena->first; block != NULL; block = block->next) {
         if ((buffer = sl_arena_allocate_from_block(block, size)) != NULL) {
+            arena->allocations ++;
+            arena->used += size;
             return buffer;
         }
     }
@@ -80,10 +82,20 @@ void *sl_arena_allocate(sl_arena *arena, size_t size)
     }
 
     arena->last = block;
+    arena->blocks ++;
+    arena->allocated += block->allocated;
 
     if (arena->first == NULL) {
         arena->first = arena->last;
     }
 
-    return sl_arena_allocate_from_block(block, size);
+    buffer = sl_arena_allocate_from_block(block, size);
+    if (buffer == NULL) {
+        return NULL;
+    }
+
+    arena->allocations ++;
+    arena->used +=size;
+
+    return buffer;
 }
