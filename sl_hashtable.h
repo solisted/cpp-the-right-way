@@ -4,8 +4,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#include "sl_string.h"
 #include "sl_arena.h"
+#include "sl_string.h"
 
 #define SL_HASHTABLE_MAX_LOAD 75
 

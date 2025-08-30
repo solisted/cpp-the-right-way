@@ -26,20 +26,6 @@ static sl_hashtable_hash sl_hashtable_compute_hash(sl_string *key)
     return hash;
 }
 
-static size_t sl_hashtable_pow2_size(size_t size)
-{
-    size --;
-    size |= size >> 1;
-    size |= size >> 2;
-    size |= size >> 4;
-    size |= size >> 8;
-    size |= size >> 16;
-    size |= size >> 32;
-    size ++;
-
-    return size;
-}
-
 static sl_hashtable_bucket *sl_hashtable_create_bucket(sl_arena *arena, sl_hashtable_hash hash, sl_string *key, sl_string *value)
 {
     sl_hashtable_bucket *bucket = sl_arena_allocate(arena, sizeof(sl_hashtable_bucket));
@@ -57,7 +43,7 @@ static sl_hashtable_bucket *sl_hashtable_create_bucket(sl_arena *arena, sl_hasht
 
 static int sl_hashtable_allocate(sl_hashtable *hashtable, size_t size)
 {
-    size_t new_pow2_size = sl_hashtable_pow2_size(size);
+    size_t new_pow2_size = sl_arena_pow2_size(size);
     size_t new_size = new_pow2_size < hashtable->preallocate ? hashtable->preallocate : new_pow2_size;
 
     sl_hashtable_bucket **buckets = sl_arena_allocate(hashtable->arena, sizeof(sl_hashtable_bucket*) * new_size);
@@ -78,7 +64,7 @@ static int sl_hashtable_allocate(sl_hashtable *hashtable, size_t size)
 
 static int sl_hashtable_resize(sl_hashtable *hashtable, size_t size)
 {
-    size_t new_pow2_size = sl_hashtable_pow2_size(size);
+    size_t new_pow2_size = sl_arena_pow2_size(size);
     if (new_pow2_size <= hashtable->size) {
         return 0;
     }
@@ -142,7 +128,7 @@ void sl_hashtable_init(sl_hashtable *hashtable, sl_arena *arena, size_t prealloc
     *hashtable = (sl_hashtable) {0};
 
     hashtable->arena = arena;
-    hashtable->preallocate = sl_hashtable_pow2_size(preallocate);
+    hashtable->preallocate = sl_arena_pow2_size(preallocate);
     hashtable->resize = resize;
 }
 

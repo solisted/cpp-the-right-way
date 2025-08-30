@@ -98,7 +98,7 @@ int sl_main_request_execute(sl_fcgi_request *request, int connection_socket)
 
 void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, int connection_socket, uint8_t *buffer, size_t length)
 {
-    ssize_t bytes_parsed = 0, previous = 0;
+    size_t bytes_parsed = 0, previous = 0;
 
     while (bytes_parsed < length) {
         bytes_parsed += sl_fcgi_parser_parse(parser, buffer + bytes_parsed, length - bytes_parsed);
@@ -219,14 +219,105 @@ void sl_main_set_process_name(int argc, char *argv[], char *env[], char *name)
     memcpy(argv[0], name, length);
 }
 
-int main(int argc, char *argv[], char *env[])
+void sl_main_event_loop(sl_log *log, int server_socket)
 {
-    sl_log log;
     sl_net_connection connections[SL_MAIN_MAX_CONNECTIONS] = {0};
     struct epoll_event event, events[SL_MAIN_MAX_EVENTS];
 
     struct sockaddr_in client_address;
     socklen_t client_address_size = sizeof(client_address);
+
+    int epoll_instance = epoll_create1(0);
+    if (epoll_instance == -1) {
+        sl_log_write(log, SL_LOG_ERROR, "epoll_create1()");
+        exit(EXIT_FAILURE);
+    }
+
+    event.events = EPOLLIN;
+    event.data.fd = server_socket;
+
+    if (epoll_ctl(epoll_instance, EPOLL_CTL_ADD, server_socket, &event) == -1) {
+        sl_log_write(log, SL_LOG_ERROR, "epoll_ctl()");
+        exit(EXIT_FAILURE);
+    }
+
+    while (sl_main_running == true) {
+        int num_events = epoll_wait(epoll_instance, events, SL_MAIN_MAX_EVENTS, -1);
+        if (num_events == -1 && errno != EINTR) {
+            sl_log_write(log, SL_LOG_ERROR, "epoll_wait()");
+            continue;
+        }
+
+        for (int n = 0; n < num_events; n ++) {
+            if (events[n].data.fd == server_socket) {
+                int client_socket = accept(server_socket, (struct sockaddr*) &client_address, &client_address_size);
+                if (client_socket == -1 && errno == EAGAIN) {
+                    continue;
+                } else if (client_socket == -1) {
+                    sl_log_write(log, SL_LOG_ERROR, "accept()");
+                    continue;
+                }
+
+                if (sl_net_set_nonblocking_socket(client_socket) == -1) {
+                    sl_log_write(log, SL_LOG_ERROR, "fcntl()");
+                    close(client_socket);
+                    continue;
+                }
+
+                sl_net_connection *connection = sl_net_find_free_connection(connections, SL_MAIN_MAX_CONNECTIONS);
+                if (connection == NULL) {
+                    sl_log_write(log, SL_LOG_ERROR, "No free connections left in the pool");
+                    close(client_socket);
+                    continue;
+                }
+
+                event.events = EPOLLIN;
+                event.data.fd = client_socket;
+
+                if (epoll_ctl(epoll_instance, EPOLL_CTL_ADD, client_socket, &event) == -1) {
+                    sl_log_write(log, SL_LOG_ERROR, "epoll_ctl()");
+                    close(client_socket);
+                    continue;
+                }
+
+                sl_net_init_connection(connection, log, client_socket, client_address, SL_MAIN_ARENA_PREALLOCATE);
+                sl_log_write(&connection->log, SL_LOG_INFO, "Connection established");
+                connection->is_busy = true;
+                continue;
+            }
+
+            sl_net_connection *connection = sl_net_find_connection(connections, SL_MAIN_MAX_CONNECTIONS, events[n].data.fd);
+            if (connection == NULL) {
+                sl_log_write(log, SL_LOG_ERROR, "Unable to find connection in the pool for socket $", events[n].data.fd);
+
+                if (epoll_ctl(epoll_instance, EPOLL_CTL_DEL, events[n].data.fd, NULL) == -1) {
+                    sl_log_write(log, SL_LOG_ERROR, "epoll_ctl()");
+                }
+
+                close(events[n].data.fd);
+                continue;
+            }
+
+            if (sl_main_process_connection(connection) == 0) {
+                connection->is_busy = false;
+
+                if (epoll_ctl(epoll_instance, EPOLL_CTL_DEL, events[n].data.fd, NULL) == -1) {
+                    sl_log_write(log, SL_LOG_ERROR, "epoll_ctl()");
+                }
+
+                sl_log_write(&connection->log, SL_LOG_INFO, "Connection closed");
+
+                close(events[n].data.fd);
+            }
+       }
+    }
+
+    sl_log_write(log, SL_LOG_INFO, "Terminating worker process");
+    sl_net_destroy_connections(connections, SL_MAIN_MAX_CONNECTIONS);
+}
+int main(int argc, char *argv[], char *env[])
+{
+    sl_log log;
 
     sl_main_set_process_name(argc, argv, env, SL_MAIN_MASTER_PROCESS_NAME);
 
@@ -264,93 +355,7 @@ int main(int argc, char *argv[], char *env[])
         sl_main_set_process_name(argc, argv, env, SL_MAIN_WORKER_PROCESS_NAME);
         sl_log_set_pid(&log, getpid());
 
-        int epoll_instance = epoll_create1(0);
-        if (epoll_instance == -1) {
-            sl_log_write(&log, SL_LOG_ERROR, "epoll_create1()");
-            exit(EXIT_FAILURE);
-        }
-
-        event.events = EPOLLIN;
-        event.data.fd = server_socket;
-
-        if (epoll_ctl(epoll_instance, EPOLL_CTL_ADD, server_socket, &event) == -1) {
-            sl_log_write(&log, SL_LOG_ERROR, "epoll_ctl()");
-            exit(EXIT_FAILURE);
-        }
-
-        while (sl_main_running == true) {
-            int num_events = epoll_wait(epoll_instance, events, SL_MAIN_MAX_EVENTS, -1);
-            if (num_events == -1 && errno != EINTR) {
-                sl_log_write(&log, SL_LOG_ERROR, "epoll_wait()");
-                continue;
-            }
-
-            for (int n = 0; n < num_events; n ++) {
-                if (events[n].data.fd == server_socket) {
-                    int client_socket = accept(server_socket, (struct sockaddr*) &client_address, &client_address_size);
-                    if (client_socket == -1 && errno == EAGAIN) {
-                        continue;
-                    } else if (client_socket == -1) {
-                        sl_log_write(&log, SL_LOG_ERROR, "accept()");
-                        continue;
-                    }
-
-                    if (sl_net_set_nonblocking_socket(client_socket) == -1) {
-                        sl_log_write(&log, SL_LOG_ERROR, "fcntl()");
-                        close(client_socket);
-                        continue;
-                    }
-
-                    sl_net_connection *connection = sl_net_find_free_connection(connections, SL_MAIN_MAX_CONNECTIONS);
-                    if (connection == NULL) {
-                        sl_log_write(&log, SL_LOG_ERROR, "No free connections left in the pool");
-                        close(client_socket);
-                        continue;
-                    }
-
-                    event.events = EPOLLIN;
-                    event.data.fd = client_socket;
-
-                    if (epoll_ctl(epoll_instance, EPOLL_CTL_ADD, client_socket, &event) == -1) {
-                        sl_log_write(&log, SL_LOG_ERROR, "epoll_ctl()");
-                        close(client_socket);
-                        continue;
-                    }
-
-                    sl_net_init_connection(connection, &log, client_socket, client_address, SL_MAIN_ARENA_PREALLOCATE);
-                    sl_log_write(&connection->log, SL_LOG_INFO, "Connection established");
-                    connection->is_busy = true;
-                    continue;
-                }
-
-                sl_net_connection *connection = sl_net_find_connection(connections, SL_MAIN_MAX_CONNECTIONS, events[n].data.fd);
-                if (connection == NULL) {
-                    sl_log_write(&log, SL_LOG_ERROR, "Unable to find connection in the pool for socket $", events[n].data.fd);
-
-                    if (epoll_ctl(epoll_instance, EPOLL_CTL_DEL, events[n].data.fd, NULL) == -1) {
-                        sl_log_write(&log, SL_LOG_ERROR, "epoll_ctl()");
-                    }
-
-                    close(events[n].data.fd);
-                    continue;
-                }
-
-                if (sl_main_process_connection(connection) == 0) {
-                    connection->is_busy = false;
-
-                    if (epoll_ctl(epoll_instance, EPOLL_CTL_DEL, events[n].data.fd, NULL) == -1) {
-                        sl_log_write(&log, SL_LOG_ERROR, "epoll_ctl()");
-                    }
-
-                    sl_log_write(&connection->log, SL_LOG_INFO, "Connection closed");
-
-                    close(events[n].data.fd);
-                }
-           }
-        }
-
-        sl_log_write(&log, SL_LOG_INFO, "Terminating worker process");
-        sl_net_destroy_connections(connections, SL_MAIN_MAX_CONNECTIONS);
+        sl_main_event_loop(&log, server_socket);
 
         return EXIT_SUCCESS;
     }

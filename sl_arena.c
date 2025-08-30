@@ -2,6 +2,20 @@
 
 #include <stdlib.h>
 
+size_t sl_arena_pow2_size(size_t size)
+{
+    size --;
+    size |= size >> 1;
+    size |= size >> 2;
+    size |= size >> 4;
+    size |= size >> 8;
+    size |= size >> 16;
+    size |= size >> 32;
+    size ++;
+
+    return size;
+}
+
 static sl_arena_block *sl_arena_create_block(size_t size)
 {
     sl_arena_block *block = malloc(sizeof(sl_arena_block) + size);

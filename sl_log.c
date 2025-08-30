@@ -25,7 +25,7 @@ static void sl_log_itoa(uint32_t value, char *buffer, size_t length)
         value_length ++;
     }
 
-    for (int n = 0; n < value_length; n ++) {
+    for (size_t n = 0; n < value_length; n ++) {
         buffer[n] = buffer[n + length];
     }
 

@@ -24,6 +24,8 @@ struct sl_arena {
     size_t used;
 };
 
+size_t sl_arena_pow2_size(size_t size);
+
 void sl_arena_init(sl_arena *arena, size_t preallocate);
 void sl_arena_rewind(sl_arena *arena);
 void sl_arena_destroy(sl_arena *arena);
