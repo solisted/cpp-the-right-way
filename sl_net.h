@@ -26,7 +26,7 @@ void sl_net_create_address(struct sockaddr_in *address, uint32_t ip_address, uin
 int sl_net_create_listen_socket(uint32_t ip_address, uint16_t port, int backlog);
 int sl_net_set_nonblocking_socket(int socket_fd);
 
-void sl_net_init_connection(sl_net_connection *connection, sl_log *log, int socket_fd, struct sockaddr_in address, size_t preallocate);
+void sl_net_init_connection(sl_net_connection *connection, sl_log *log, int socket_fd, struct sockaddr_in address, size_t arena_preallocate, size_t param_hashtable_size);
 sl_net_connection *sl_net_find_connection(sl_net_connection *connections, size_t max_connections, int socket_fd);
 sl_net_connection *sl_net_find_free_connection(sl_net_connection *connections, size_t max_connections);
 void sl_net_destroy_connections(sl_net_connection *connections, size_t max_connections);

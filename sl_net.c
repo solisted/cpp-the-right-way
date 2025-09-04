@@ -51,7 +51,7 @@ int sl_net_set_nonblocking_socket(int socket_fd)
     return 0;
 }
 
-void sl_net_init_connection(sl_net_connection *connection, sl_log *log, int socket_fd, struct sockaddr_in address, size_t preallocate)
+void sl_net_init_connection(sl_net_connection *connection, sl_log *log, int socket_fd, struct sockaddr_in address, size_t arena_preallocate, size_t param_hashtable_size)
 {
     connection->socket_fd = socket_fd;
     connection->address = address;
@@ -62,13 +62,13 @@ void sl_net_init_connection(sl_net_connection *connection, sl_log *log, int sock
     sl_log_set_ip_address_port(&connection->log, &address);
 
     if (connection->arena.first == NULL) {
-        sl_arena_init(&connection->arena, preallocate);
+        sl_arena_init(&connection->arena, arena_preallocate);
     } else {
         sl_arena_rewind(&connection->arena);
     }
 
     sl_fcgi_parser_init(&connection->parser, &connection->arena, &connection->log);
-    sl_fcgi_request_init(&connection->request, &connection->arena, &connection->log);
+    sl_fcgi_request_init(&connection->request, &connection->arena, &connection->log, param_hashtable_size);
 }
 
 sl_net_connection *sl_net_find_connection(sl_net_connection *connections, size_t max_connections, int socket_fd)

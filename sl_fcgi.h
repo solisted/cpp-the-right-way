@@ -5,6 +5,8 @@
 
 #include "sl_arena.h"
 #include "sl_log.h"
+#include "sl_string.h"
+#include "sl_hashtable.h"
 
 #define SL_FCGI_VERSION 1
 
@@ -26,6 +28,7 @@ typedef struct sl_fcgi_msg_param sl_fcgi_msg_param;
 typedef struct sl_fcgi_msg_stdin sl_fcgi_msg_stdin;
 typedef struct sl_fcgi_msg_end sl_fcgi_msg_end;
 typedef struct sl_fcgi_request sl_fcgi_request;
+typedef struct sl_fcgi_response sl_fcgi_response;
 
 enum sl_fcgi_parser_state {
     SL_FGI_PARSER_STATE_VERSION,
@@ -128,15 +131,26 @@ struct sl_fcgi_request {
     sl_log *log;
     uint16_t request_id;
     uint8_t flags;
-    sl_fcgi_msg_param *first_param;
-    sl_fcgi_msg_param *last_param;
-    sl_fcgi_msg_stdin stdin_stream;
+    sl_hashtable parameters;
+    sl_string stdin;
+};
+
+struct sl_fcgi_response {
+    sl_arena *arena;
+    sl_log *log;
+    sl_hashtable headers;
+    sl_string stdout;
 };
 
 void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena, sl_log *log);
 ssize_t sl_fcgi_parser_parse(sl_fcgi_parser *parser, uint8_t *buffer, size_t length);
 
-void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena, sl_log *log);
+void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena, sl_log *log, size_t param_hashtable_size);
 void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser);
+
+void sl_fcgi_response_init(sl_fcgi_response *response, sl_arena *arena, sl_log *log, size_t header_hashtable_size);
+int sl_fcgi_response_append_header(sl_fcgi_response *response, sl_string *name, sl_string *value);
+int sl_fcgi_response_append_output(sl_fcgi_response *response, sl_string *output);
+sl_string *sl_fcgi_response_process(sl_fcgi_response *response);
 
 #endif

@@ -23,11 +23,11 @@
 #define SL_NET_IP_ADDRESS_SIZE  16
 
 #define SL_MAIN_ARENA_PREALLOCATE 102400
+#define SL_MAIN_PARAMS_PREALLOCATE 64
+#define SL_MAIN_HEADERS_PREALLOCATE 16
 
 #define SL_MAIN_MASTER_PROCESS_NAME "cpptrw: master process"
 #define SL_MAIN_WORKER_PROCESS_NAME "cpptrw: worker process"
-
-#define SL_MAIN_FCGI_RESPONSE "Content-Type: text/plain\r\n\r\nOK\n"
 
 #define SL_MAIN_MAX_CONNECTIONS 1024
 #define SL_MAIN_MAX_EVENTS       256
@@ -82,14 +82,35 @@ int sl_main_request_send_response(sl_fcgi_request *request, int connection_socke
         return -1;
     }
 
-    sl_log_write(request->log, SL_LOG_INFO, "Sent $ bytes response", bytes_sent);
+    sl_log_write_format(request->arena, request->log, SL_LOG_INFO, "Sent %z bytes response", bytes_sent);
 
     return 0;
 }
 
 int sl_main_request_execute(sl_fcgi_request *request, int connection_socket)
 {
-    if (sl_main_request_send_response(request, connection_socket, SL_MAIN_FCGI_RESPONSE, strlen(SL_MAIN_FCGI_RESPONSE)) == -1) {
+    sl_fcgi_response response;
+
+    sl_fcgi_response_init(&response, request->arena, request->log, SL_MAIN_HEADERS_PREALLOCATE);
+
+    sl_string header_name = sl_string_init_with_cstring("Content-Type");
+    sl_string value_name = sl_string_init_with_cstring("text/plain");
+    sl_string output = sl_string_init_with_cstring("OK\n");
+
+    if (sl_fcgi_response_append_header(&response, &header_name, &value_name) == -1) {
+        return -1;
+    }
+
+    if (sl_fcgi_response_append_output(&response, &output) == -1) {
+        return -1;
+    }
+
+    sl_string *raw_response = sl_fcgi_response_process(&response);
+    if (raw_response == NULL) {
+        return -1;
+    }
+
+    if (sl_main_request_send_response(request, connection_socket, raw_response->buffer, raw_response->length) == -1) {
         return -1;
     }
 
@@ -103,7 +124,7 @@ void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, int 
     while (bytes_parsed < length) {
         bytes_parsed += sl_fcgi_parser_parse(parser, buffer + bytes_parsed, length - bytes_parsed);
 
-        sl_log_write(request->log, SL_LOG_INFO, "Parsed $ bytes", bytes_parsed - previous);
+        sl_log_write_format(request->arena, request->log, SL_LOG_INFO, "Parsed %z bytes", bytes_parsed - previous);
 
         if (parser->state == SL_FCGI_PARSER_STATE_ERROR) {
             sl_log_write(request->log, SL_LOG_ERROR, "Error parsing FCGI message");
@@ -119,8 +140,11 @@ void sl_main_parse_buffer(sl_fcgi_request *request, sl_fcgi_parser *parser, int 
             }
 
             if (request->state == SL_FCGI_REQUEST_STATE_FINISHED) {
-                sl_log_write(parser->log, SL_LOG_INFO, "FCGI request complete");
-                sl_main_request_execute(request, connection_socket);
+                if (sl_main_request_execute(request, connection_socket) == -1) {
+                    sl_log_write(parser->log, SL_LOG_ERROR, "FCGI request failed to execute");
+                } else {
+                    sl_log_write(parser->log, SL_LOG_INFO, "FCGI request complete");
+                }
                 break;
             }
 
@@ -137,7 +161,7 @@ int sl_main_process_connection(sl_net_connection *connection)
     ssize_t bytes_read;
 
     while ((bytes_read = recv(connection->socket_fd, recv_buffer, SL_NET_RECV_BUFFER_SIZE, 0)) > 0) {
-        sl_log_write(&connection->log, SL_LOG_INFO, "Received $ bytes", bytes_read);
+        sl_log_write_format(&connection->arena, &connection->log, SL_LOG_INFO, "Received %z bytes", bytes_read);
 
         sl_main_parse_buffer(&connection->request, &connection->parser, connection->socket_fd, recv_buffer, bytes_read);
         if (connection->request.state == SL_FCGI_REQUEST_STATE_ERROR || connection->parser.state == SL_FCGI_PARSER_STATE_ERROR) {
@@ -157,7 +181,7 @@ int sl_main_process_connection(sl_net_connection *connection)
         (connection->request.flags & SL_FCGI_FLAG_KEEP_CONN) == SL_FCGI_FLAG_KEEP_CONN) {
         sl_log_write(&connection->log, SL_LOG_INFO, "Reusing connection");
 
-        sl_net_init_connection(connection, &connection->log, connection->socket_fd, connection->address, SL_MAIN_ARENA_PREALLOCATE);
+        sl_net_init_connection(connection, &connection->log, connection->socket_fd, connection->address, SL_MAIN_ARENA_PREALLOCATE, SL_MAIN_PARAMS_PREALLOCATE);
         connection->is_busy = true;
 
         return 1;
@@ -280,7 +304,7 @@ void sl_main_event_loop(sl_log *log, int server_socket)
                     continue;
                 }
 
-                sl_net_init_connection(connection, log, client_socket, client_address, SL_MAIN_ARENA_PREALLOCATE);
+                sl_net_init_connection(connection, log, client_socket, client_address, SL_MAIN_ARENA_PREALLOCATE, SL_MAIN_PARAMS_PREALLOCATE);
                 sl_log_write(&connection->log, SL_LOG_INFO, "Connection established");
                 connection->is_busy = true;
                 continue;
@@ -288,7 +312,7 @@ void sl_main_event_loop(sl_log *log, int server_socket)
 
             sl_net_connection *connection = sl_net_find_connection(connections, SL_MAIN_MAX_CONNECTIONS, events[n].data.fd);
             if (connection == NULL) {
-                sl_log_write(log, SL_LOG_ERROR, "Unable to find connection in the pool for socket $", events[n].data.fd);
+                sl_log_write_format(&connection->arena, log, SL_LOG_ERROR, "Unable to find connection in the pool for socket %z", events[n].data.fd);
 
                 if (epoll_ctl(epoll_instance, EPOLL_CTL_DEL, events[n].data.fd, NULL) == -1) {
                     sl_log_write(log, SL_LOG_ERROR, "epoll_ctl()");
@@ -315,9 +339,13 @@ void sl_main_event_loop(sl_log *log, int server_socket)
     sl_log_write(log, SL_LOG_INFO, "Terminating worker process");
     sl_net_destroy_connections(connections, SL_MAIN_MAX_CONNECTIONS);
 }
+
 int main(int argc, char *argv[], char *env[])
 {
     sl_log log;
+    sl_arena arena;
+
+    sl_arena_init(&arena, SL_MAIN_ARENA_PREALLOCATE);
 
     sl_main_set_process_name(argc, argv, env, SL_MAIN_MASTER_PROCESS_NAME);
 
@@ -348,7 +376,7 @@ int main(int argc, char *argv[], char *env[])
         }
 
         if (pid > 0) {
-            sl_log_write(&log, SL_LOG_INFO, "Spawned worker process $", pid);
+            sl_log_write_format(&arena, &log, SL_LOG_INFO, "Spawned worker process %z", pid);
             continue;
         }
 
@@ -357,9 +385,11 @@ int main(int argc, char *argv[], char *env[])
 
         sl_main_event_loop(&log, server_socket);
 
+        sl_arena_destroy(&arena);
         return EXIT_SUCCESS;
     }
 
+    sl_arena_destroy(&arena);
     close(server_socket);
     wait(NULL);
 

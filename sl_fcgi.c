@@ -1,6 +1,9 @@
 #include "sl_fcgi.h"
+#include "sl_string.h"
 
 #include <stdio.h>
+
+#define SL_FCGI_RESPONSE_HEADER_PREALLOCATE 64
 
 void sl_fcgi_parser_init(sl_fcgi_parser *parser, sl_arena *arena, sl_log *log)
 {
@@ -173,6 +176,10 @@ void sl_fcgi_parser_parse_params(sl_fcgi_parser *parser, uint8_t octet)
                 if (parser->read_counter == 0) {
                     parser->last_param->value[parser->last_param->value_length] = 0;
 
+                    sl_string parameter_name = sl_string_init_with_buffer((char *) parser->last_param->name, parser->last_param->name_length);
+                    sl_string parameter_value = sl_string_init_with_buffer((char *) parser->last_param->value, parser->last_param->value_length);
+                    sl_log_write_format(parser->arena, parser->log, SL_LOG_DEBUG, "FCGI parameter: %S=%S", &parameter_name, &parameter_value);
+
                     if (parser->message_size == parser->message_header.content_length) {
                         if (parser->message_header.padding_length == 0) {
                             parser->state = SL_FCGI_PARSER_STATE_FINISHED;
@@ -222,6 +229,9 @@ void sl_fcgi_parser_parse_stdin(sl_fcgi_parser *parser, uint8_t octet)
 
                 if (parser->read_counter == 0) {
                     parser->stdin_stream.data[parser->stdin_stream.length] = 0;
+
+                    sl_string stdin = sl_string_init_with_buffer((char *) parser->stdin_stream.data, parser->stdin_stream.length);
+                    sl_log_write_format(parser->arena, parser->log, SL_LOG_DEBUG, "FCGI stdin: %S", &stdin);
 
                     if (parser->message_header.padding_length > 0) {
                         parser->read_counter = parser->message_header.padding_length;
@@ -339,26 +349,24 @@ ssize_t sl_fcgi_parser_parse(sl_fcgi_parser *parser, uint8_t *buffer, size_t len
     return total_parsed;
 }
 
-void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena, sl_log *log)
+void sl_fcgi_request_init(sl_fcgi_request *request, sl_arena *arena, sl_log *log, size_t param_hashtable_size)
 {
     *request = (sl_fcgi_request) {0};
 
     request->state = SL_FCGI_REQUEST_STATE_BEGIN;
     request->arena = arena;
     request->log = log;
+
+    sl_hashtable_init(&request->parameters, request->arena, param_hashtable_size, true);
 }
 
 static void sl_fcgi_request_append_param(sl_fcgi_request *request, sl_fcgi_parser *parser)
 {
-    // TODO: If arenas are not the same for request and parser, copy list instead of just relinking
-    if (request->first_param == NULL) {
-        request->first_param = parser->first_param;
-        request->last_param = parser->last_param;
-        return;
+    for (sl_fcgi_msg_param *parameter = parser->first_param; parameter != NULL; parameter = parameter->next) {
+        sl_string *name = sl_string_create_from_buffer(request->arena, (char *) parameter->name, parameter->name_length, parameter->name_length);
+        sl_string *value = sl_string_create_from_buffer(request->arena, (char *) parameter->value, parameter->value_length, parameter->value_length);;
+        sl_hashtable_set(&request->parameters, name, value);
     }
-
-    request->last_param->next = parser->first_param;
-    request->last_param = parser->last_param;
 }
 
 static void sl_fcgi_request_append_stdin(sl_fcgi_request *request, sl_fcgi_parser *parser)
@@ -367,22 +375,10 @@ static void sl_fcgi_request_append_stdin(sl_fcgi_request *request, sl_fcgi_parse
         return;
     }
 
-    size_t new_length = request->stdin_stream.length + parser->stdin_stream.length;
-    uint8_t *buffer = sl_arena_allocate(request->arena, new_length + 1);
-    if (buffer == NULL) {
+    if (sl_string_append_with_buffer(request->arena, &request->stdin, (char *) parser->stdin_stream.data, parser->stdin_stream.length) == -1) {
         request->state = SL_FCGI_REQUEST_STATE_ERROR;
         return;
     }
-
-    if (request->stdin_stream.length != 0) {
-        memcpy(buffer, request->stdin_stream.data, request->stdin_stream.length);
-    }
-
-    memcpy(buffer + request->stdin_stream.length, parser->stdin_stream.data, parser->stdin_stream.length);
-
-    request->stdin_stream.length = new_length;
-    request->stdin_stream.data = buffer;
-    request->stdin_stream.data[request->stdin_stream.length] = 0;
 }
 
 void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser)
@@ -451,4 +447,61 @@ void sl_fcgi_request_process(sl_fcgi_request *request, sl_fcgi_parser *parser)
         case SL_FCGI_REQUEST_STATE_ERROR:
             break;
     }
+}
+
+void sl_fcgi_response_init(sl_fcgi_response *response, sl_arena *arena, sl_log *log, size_t header_hashtable_size)
+{
+    *response = (sl_fcgi_response) {0};
+
+    response->arena = arena;
+    response->log = log;
+
+    sl_hashtable_init(&response->headers, response->arena, header_hashtable_size, true);
+}
+
+inline int sl_fcgi_response_append_header(sl_fcgi_response *response, sl_string *name, sl_string *value)
+{
+    return sl_hashtable_set(&response->headers, name, value);
+}
+
+inline int sl_fcgi_response_append_output(sl_fcgi_response *response, sl_string *output)
+{
+    return sl_string_append_with_string(response->arena, &response->stdout, output);
+}
+
+sl_string *sl_fcgi_response_process(sl_fcgi_response *response)
+{
+    sl_string *output = sl_arena_allocate(response->arena, sizeof(sl_string));
+    if (output == NULL) {
+        return NULL;
+    }
+
+    *output = (sl_string) {0};
+
+    for (size_t n = 0; n < response->headers.size; n ++) {
+        sl_hashtable_bucket *bucket = response->headers.buckets[n];
+        if (bucket == NULL) {
+            continue;
+        }
+
+        for (sl_hashtable_bucket *node = bucket; node != NULL; node = node->next) {
+            sl_string *header = sl_string_format(response->arena, "%S: %S\r\n", node->key, node->value);
+            if (header == NULL) {
+                return NULL;
+            }
+            if (sl_string_append_with_string(response->arena, output, header) == -1) {
+                return NULL;
+            }
+        }
+    }
+
+    if (sl_string_append_with_buffer(response->arena, output, "\r\n", 2) == -1) {
+        return NULL;
+    }
+
+    if (sl_string_append_with_string(response->arena, output, &response->stdout) == -1) {
+        return NULL;
+    }
+
+    return output;
 }

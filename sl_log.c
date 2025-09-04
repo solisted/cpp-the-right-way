@@ -6,9 +6,10 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
-#include <stdarg.h>
 
 #include <arpa/inet.h>
+
+#include "sl_string.h"
 
 static char *sl_log_levels[SL_LOG_MAX] = {
     "[debug] ", "[info] ", "[error] "
@@ -52,7 +53,27 @@ void sl_log_init(sl_log *log, sl_log_level min_level, int log_fd)
     log->log_fd = log_fd;
 }
 
-void sl_log_write(sl_log *log, sl_log_level level, char *message, ...)
+inline void sl_log_write(sl_log *log, sl_log_level level, char *message)
+{
+    sl_log_write_buffer(log, level, message, strlen(message));
+}
+
+void sl_log_write_format(sl_arena *arena, sl_log *log, sl_log_level level, char *format, ...)
+{
+    va_list arguments;
+
+    va_start(arguments, format);
+    sl_string *message = sl_string_format_buffer(arena, format, strlen(format), arguments);
+    va_end(arguments);
+
+    if (message != NULL) {
+        sl_log_write_buffer(log, level, message->buffer, message->length);
+    } else {
+        sl_log_write_buffer(log, level, format, strlen(format));
+    }
+}
+
+void sl_log_write_buffer(sl_log *log, sl_log_level level, char *message, size_t length)
 {
     if (level < log->min_level || level >= SL_LOG_MAX) {
         return;
@@ -82,22 +103,7 @@ void sl_log_write(sl_log *log, sl_log_level level, char *message, ...)
         sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, " ", 1, &log_buffer_size);
     }
 
-    va_list arguments;
-    char *dollar_pointer = message;
-    char argument[SL_LOG_MAX_ARG_LENGTH] = {0};
-
-    for (dollar_pointer = message; *dollar_pointer != 0 && *dollar_pointer != '$'; dollar_pointer ++);
-
-    if (*dollar_pointer == 0) {
-        sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, message, strlen(message), &log_buffer_size);
-    } else if (*dollar_pointer == '$') {
-        va_start(arguments, message);
-        sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, message, dollar_pointer - message, &log_buffer_size);
-        sl_log_itoa(va_arg(arguments, uint32_t), argument, SL_LOG_MAX_ARG_LENGTH);
-        sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, argument, strlen(argument), &log_buffer_size);
-        sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, dollar_pointer + 1, strlen(dollar_pointer) - 1, &log_buffer_size);
-        va_end(arguments);
-    }
+    sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, message, length, &log_buffer_size);
 
     if (level == SL_LOG_ERROR && errno > 0) {
         sl_log_append(log_buffer, SL_LOG_MAX_MESSAGE_LENGTH, ": ", 2, &log_buffer_size);
